@@ -2,51 +2,33 @@
 const vertexShaderSource = `
 attribute vec3 vertex;
 attribute vec3 normal;
+attribute vec3 tangent;
+attribute vec2 texCoord;
 
 uniform mat4 ModelViewMatrix;
 uniform mat4 ProjectionMatrix;
 uniform mat3 NormalMatrix;
-uniform vec3 LightPosition; // Координати світла, вже помножені на ModelView у JS
 
-varying vec4 v_color;
+varying vec2 v_texCoord;
+varying vec3 v_vertPos;
+varying mat3 v_TBN;
 
 void main() {
     // 1. Позиція вершини в системі координат камери (View Space)
     vec4 vertPos4 = ModelViewMatrix * vec4(vertex, 1.0);
-    vec3 vertPos = vertPos4.xyz;
+    v_vertPos = vertPos4.xyz;
+    v_texCoord = texCoord;
 
-    // 2. Перетворення нормалі в View Space та її нормалізація
+    // 2. Перетворення нормалі та дотичної у View Space
     vec3 N = normalize(NormalMatrix * normal);
+    vec3 T = normalize(NormalMatrix * tangent);
 
-    // 3. Вектор напрямку на джерело світла
-    vec3 L = normalize(LightPosition - vertPos);
+    // 3. Ортогоналізація за Грамом-Шмідтом з пріоритетом нормального вектора N
+    T = normalize(T - dot(T, N) * N);
+    vec3 B = cross(N, T);
 
-    // 4. Вектор на спостерігача (модель глобального глядача: (0, 0, 1))
-    vec3 V = vec3(0.0, 0.0, 1.0);
-
-    // 5. Вектор віддзеркалення світла
-    vec3 R = reflect(-L, N);
-
-    // Властивості матеріалу та світла
-    vec3 ambientColor = vec3(0.15, 0.15, 0.2);
-    vec3 diffuseColor = vec3(0.2, 0.6, 0.85);
-    vec3 specularColor = vec3(1.0, 1.0, 1.0);
-    float shininess = 32.0;
-
-    // Компоненти освітлення
-    vec3 ambient = ambientColor;
-
-    float diffFactor = max(dot(N, L), 0.0);
-    vec3 diffuse = diffFactor * diffuseColor;
-
-    float specFactor = 0.0;
-    if (diffFactor > 0.0) {
-        specFactor = pow(max(dot(R, V), 0.0), shininess);
-    }
-    vec3 specular = specFactor * specularColor;
-
-    // Підсумковий колір Гуро для вершини
-    v_color = vec4(ambient + diffuse + specular, 1.0);
+    // 4. Матриця переходу з дотичного простору (Tangent Space) у View Space
+    v_TBN = mat3(T, B, N);
 
     gl_Position = ProjectionMatrix * vertPos4;
 }`;
@@ -59,8 +41,48 @@ const fragmentShaderSource = `
    precision mediump float;
 #endif
 
-varying vec4 v_color;
+varying vec2 v_texCoord;
+varying vec3 v_vertPos;
+varying mat3 v_TBN;
+
+uniform vec3 LightPosition; // Координати світла у View Space
+
+uniform sampler2D uDiffuseMap;
+uniform sampler2D uSpecularMap;
+uniform sampler2D uNormalMap;
 
 void main() {
-    gl_FragColor = v_color;
+    // 1. Отримуємо нормаль із Normal Map [0, 1] -> [-1, 1] і переводимо у View Space
+    vec3 mapNormal = texture2D(uNormalMap, v_texCoord).rgb;
+    mapNormal = normalize(mapNormal * 2.0 - 1.0);
+    vec3 N = normalize(v_TBN * mapNormal);
+
+    // 2. Зчитуємо значення з дифузної та дзеркальної текстур
+    vec3 diffTex = texture2D(uDiffuseMap, v_texCoord).rgb;
+    float specTex = texture2D(uSpecularMap, v_texCoord).r;
+
+    // 3. Вектори освітлення (модель Фонга)
+    vec3 L = normalize(LightPosition - v_vertPos);
+    vec3 V = normalize(-v_vertPos);
+    vec3 R = reflect(-L, N);
+
+    // Властивості світла та матеріалу
+    vec3 ambientColor = vec3(0.25, 0.25, 0.25);
+    vec3 diffuseColor = vec3(1.0, 1.0, 1.0);
+    vec3 specularColor = vec3(1.0, 1.0, 1.0);
+    float shininess = 32.0;
+
+    // 4. Розрахунок компонентів освітлення з текстурною модуляцією
+    vec3 ambient = ambientColor * diffTex;
+
+    float diffFactor = max(dot(N, L), 0.0);
+    vec3 diffuse = diffuseColor * diffFactor * diffTex;
+
+    float specFactor = 0.0;
+    if (diffFactor > 0.0) {
+        specFactor = pow(max(dot(R, V), 0.0), shininess);
+    }
+    vec3 specular = specularColor * specFactor * specTex;
+
+    gl_FragColor = vec4(ambient + diffuse + specular, 1.0);
 }`;
